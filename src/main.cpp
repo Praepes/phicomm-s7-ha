@@ -714,6 +714,12 @@ static void startAP() {
   WiFi.softAP((String("S7-") + String(ESP.getChipId(), HEX)).c_str());
   apOn = true;
 }
+static void stopAP() {
+  if (!apOn) return;
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  apOn = false;
+}
 static void setupOTA() {
   if (otaOn) return;
   ArduinoOTA.setHostname(S7_DEVICE_ID);
@@ -958,12 +964,43 @@ static void applySave() {
 
 static void redir(){web.sendHeader("Location","/",true);web.send(303,"text/plain","");}
 
+static void sendSaveOk() {
+  String p;
+  p += F("<!DOCTYPE html><html><head><meta charset=utf-8>"
+    "<meta name=viewport content='width=device-width,initial-scale=1'>"
+    "<title>\xe4\xbf\x9d\xe5\xad\x98\xe6\x88\x90\xe5\x8a\x9f</title>"
+    "<style>body{background:#1a1a2e;color:#e0e0e0;font-family:system-ui;display:flex;"
+    "justify-content:center;align-items:center;min-height:100vh;margin:0}"
+    ".box{text-align:center;background:#16213e;padding:2em 3em;border-radius:12px;"
+    "box-shadow:0 4px 20px rgba(0,0,0,.4)}"
+    "h2{color:#4fc3f7;margin-top:0}p{margin:.8em 0;font-size:1.1em}"
+    ".hint{color:#999;font-size:.9em}a{color:#4fc3f7}</style></head><body>"
+    "<div class=box><h2>\xe8\xae\xbe\xe7\xbd\xae\xe5\xb7\xb2\xe4\xbf\x9d\xe5\xad\x98</h2>"
+    "<p>\xe6\xad\xa3\xe5\x9c\xa8\xe8\xbf\x9e\xe6\x8e\xa5 WiFi\xe2\x80\xa6</p>");
+  // 设置已保存 / 正在连接 WiFi...
+  if (cfg.ssid[0]) {
+    p += F("<p>SSID: <b>");
+    p += esc(String(cfg.ssid));
+    p += F("</b></p>"
+      "<p class=hint>\xe8\xae\xbe\xe5\xa4\x87\xe5\xb0\x86\xe8\x87\xaa\xe5\x8a\xa8\xe5\x85\xb3\xe9\x97\xad\xe7\x83\xad\xe7\x82\xb9\xe3\x80\x82</p>"
+      "<p class=hint>\xe8\xaf\xb7\xe8\xbf\x9e\xe6\x8e\xa5\xe5\x88\xb0\xe5\x90\x8c\xe4\xb8\x80 WiFi \xe5\x90\x8e\xe8\xae\xbf\xe9\x97\xae\xe7\xa7\xa4\xe7\x9a\x84\xe6\x96\xb0 IP\xe3\x80\x82</p>");
+    // 设备将自动关闭热点。请连接到同一 WiFi 后访问秤的新 IP。
+  } else {
+    p += F("<p class=hint>\xe6\x9c\xaa\xe8\xae\xbe\xe7\xbd\xae WiFi\xef\xbc\x8c\xe7\x83\xad\xe7\x82\xb9\xe4\xbb\x8d\xe7\x84\xb6\xe5\xbc\x80\xe5\x90\xaf\xe3\x80\x82</p>");
+    // 未设置 WiFi，热点仍然开启。
+  }
+  p += F("<p style='margin-top:1.5em'><a href='/'>\xe8\xbf\x94\xe5\x9b\x9e\xe9\xa6\x96\xe9\xa1\xb5</a></p>"
+    "</div></body></html>");
+  // 返回首页
+  web.send(200, "text/html", p);
+}
+
 static void setupWeb() {
   if(cfg.otaPass[0])httpUpdater.setup(&web,"/update","admin",cfg.otaPass);
   else httpUpdater.setup(&web,"/update");
   web.on("/",HTTP_GET,handleRoot);
   web.on("/api/state",HTTP_GET,[]{web.send(200,"application/json",stateJson());});
-  web.on("/save",HTTP_POST,[]{uint32_t ob=cfg.mcuBaud;applySave();if(cfg.mcuBaud!=ob){Serial.end();Serial.begin(cfg.mcuBaud);}mqtt.disconnect();WiFi.disconnect();WiFi.begin(cfg.ssid,cfg.pass);redir();});
+  web.on("/save",HTTP_POST,[]{uint32_t ob=cfg.mcuBaud;applySave();if(cfg.mcuBaud!=ob){Serial.end();Serial.begin(cfg.mcuBaud);}mqtt.disconnect();WiFi.disconnect();WiFi.begin(cfg.ssid,cfg.pass);sendSaveOk();});
   web.on("/impedance",HTTP_POST,[]{csDoImpedanceScan();calcBodyComp();pubState();redir();});
   web.on("/heater",HTTP_POST,[]{heaterSet(web.arg("on")=="1");pubState();redir();});
   web.begin();
@@ -986,6 +1023,16 @@ void loop() {
     lastWifiMs=millis();WiFi.disconnect();WiFi.begin(cfg.ssid,cfg.pass);
   }
   connectMqtt(); mqtt.loop(); web.handleClient(); ArduinoOTA.handle(); uartPoll();
+
+  // Auto-close AP once WiFi STA is connected
+  static uint32_t staConnectedSince = 0;
+  if (WiFi.status() == WL_CONNECTED) {
+    if (staConnectedSince == 0) staConnectedSince = millis();
+    if (apOn && millis() - staConnectedSince > 10000) stopAP();  // 10s grace period
+  } else {
+    staConnectedSince = 0;
+    if (!apOn && cfg.ssid[0] && millis() > 60000) startAP();  // re-open AP if WiFi lost after 60s
+  }
 
   // Heater auto-off
   if(heaterOn&&heaterOffMs&&(int32_t)(millis()-heaterOffMs)>=0){
