@@ -1,0 +1,8 @@
+.pio/
+.vscode/
+src/config.h
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
