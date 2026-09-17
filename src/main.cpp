@@ -99,6 +99,8 @@ struct Meas {
 Config cfg; Meas m; McuFrame rx;
 uint32_t lastMqttMs, lastWifiMs, heaterOffMs;
 bool heaterOn, apOn, otaOn;
+static bool     wifiReconnectPending = false;
+static uint32_t wifiReconnectAt     = 0;
 
 // Weight debounce state
 static bool     personOnScale    = false;
@@ -1000,7 +1002,7 @@ static void setupWeb() {
   else httpUpdater.setup(&web,"/update");
   web.on("/",HTTP_GET,handleRoot);
   web.on("/api/state",HTTP_GET,[]{web.send(200,"application/json",stateJson());});
-  web.on("/save",HTTP_POST,[]{uint32_t ob=cfg.mcuBaud;applySave();if(cfg.mcuBaud!=ob){Serial.end();Serial.begin(cfg.mcuBaud);}mqtt.disconnect();WiFi.begin(cfg.ssid,cfg.pass);sendSaveOk();});
+  web.on("/save",HTTP_POST,[]{uint32_t ob=cfg.mcuBaud;applySave();if(cfg.mcuBaud!=ob){Serial.end();Serial.begin(cfg.mcuBaud);}mqtt.disconnect();sendSaveOk();wifiReconnectPending=true;wifiReconnectAt=millis()+500;});
   web.on("/impedance",HTTP_POST,[]{csDoImpedanceScan();calcBodyComp();pubState();redir();});
   web.on("/heater",HTTP_POST,[]{heaterSet(web.arg("on")=="1");pubState();redir();});
   web.begin();
@@ -1019,7 +1021,12 @@ void setup() {
 
 void loop() {
   // Core services
-  if(cfg.ssid[0]&&WiFi.status()!=WL_CONNECTED&&millis()-lastWifiMs>WIFI_RETRY_MS){
+  if (wifiReconnectPending && (int32_t)(millis()-wifiReconnectAt) >= 0) {
+    wifiReconnectPending = false;
+    WiFi.begin(cfg.ssid, cfg.pass);
+    lastWifiMs = millis();
+  }
+  if(cfg.ssid[0]&&WiFi.status()!=WL_CONNECTED&&!wifiReconnectPending&&millis()-lastWifiMs>WIFI_RETRY_MS){
     lastWifiMs=millis();WiFi.begin(cfg.ssid,cfg.pass);
   }
   connectMqtt(); mqtt.loop(); web.handleClient(); ArduinoOTA.handle(); uartPoll();
