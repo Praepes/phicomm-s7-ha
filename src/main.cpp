@@ -1000,7 +1000,7 @@ static void setupWeb() {
   else httpUpdater.setup(&web,"/update");
   web.on("/",HTTP_GET,handleRoot);
   web.on("/api/state",HTTP_GET,[]{web.send(200,"application/json",stateJson());});
-  web.on("/save",HTTP_POST,[]{uint32_t ob=cfg.mcuBaud;applySave();if(cfg.mcuBaud!=ob){Serial.end();Serial.begin(cfg.mcuBaud);}mqtt.disconnect();WiFi.disconnect();WiFi.begin(cfg.ssid,cfg.pass);sendSaveOk();});
+  web.on("/save",HTTP_POST,[]{uint32_t ob=cfg.mcuBaud;applySave();if(cfg.mcuBaud!=ob){Serial.end();Serial.begin(cfg.mcuBaud);}mqtt.disconnect();WiFi.begin(cfg.ssid,cfg.pass);sendSaveOk();});
   web.on("/impedance",HTTP_POST,[]{csDoImpedanceScan();calcBodyComp();pubState();redir();});
   web.on("/heater",HTTP_POST,[]{heaterSet(web.arg("on")=="1");pubState();redir();});
   web.begin();
@@ -1020,7 +1020,7 @@ void setup() {
 void loop() {
   // Core services
   if(cfg.ssid[0]&&WiFi.status()!=WL_CONNECTED&&millis()-lastWifiMs>WIFI_RETRY_MS){
-    lastWifiMs=millis();WiFi.disconnect();WiFi.begin(cfg.ssid,cfg.pass);
+    lastWifiMs=millis();WiFi.begin(cfg.ssid,cfg.pass);
   }
   connectMqtt(); mqtt.loop(); web.handleClient(); ArduinoOTA.handle(); uartPoll();
 
