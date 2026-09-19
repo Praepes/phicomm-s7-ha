@@ -15,7 +15,7 @@
 //  Hardware: CS1258 BIA AFE + MCU UART + Heater + Web UI
 //  License:  MIT
 // ============================================================
-#define FW_VERSION "1.0"
+#define FW_VERSION "1.0.1"
 
 #if __has_include("config.h")
 #include "config.h"
@@ -39,7 +39,7 @@ static constexpr uint32_t WIFI_RETRY_MS      = 10000;
 static constexpr uint8_t  UART_MAX_FRAME     = 40;
 static constexpr uint32_t MCU_TIMEOUT_MS     = 5000;
 static constexpr float    WEIGHT_ON_THRESH   = 3.0f;
-static constexpr uint32_t IMPEDANCE_COOL_MS  = 20000;
+static constexpr uint32_t IMPEDANCE_COOL_MS  = 5000;
 static constexpr float    WEIGHT_STABLE_DELTA= 0.3f;   // kg — weight change threshold
 static constexpr uint32_t WEIGHT_STABLE_MS   = 3000;   // ms — how long weight must be stable
 
@@ -365,7 +365,8 @@ static void csDoImpedanceScan() {
 }
 
 static void calcBodyComp() {
-  float h = cfg.heightM, hCm = h*100, w = m.weightKg, z = m.zEffOhm;
+  float w = (stableWeight >= WEIGHT_ON_THRESH) ? stableWeight : m.weightKg;
+  float h = cfg.heightM, hCm = h*100, z = m.zEffOhm;
   float age = (float)cfg.age;
   bool male = cfg.male;
   if (w <= 0 || h <= 0) return;
@@ -423,7 +424,11 @@ static uint8_t xorCheck(const uint8_t *d, uint8_t n) { uint8_t x=0; for(uint8_t 
 static void mcuSend(const uint8_t *d, uint8_t len) { Serial.write(d, len); }
 
 static void mcuSendStatus10() {
-  uint8_t f[7]={0xC6,0x04,0x10,0,0,0,0}; f[3]=m.csOk?1:0; f[6]=xorCheck(f,6); mcuSend(f,7);
+  uint8_t f[7]={0xC6,0x04,0x10,0,0,0,0};
+  f[3]=m.csOk?1:0;
+  f[4]=(WiFi.status()==WL_CONNECTED)?1:0;
+  f[5]=mqtt.connected()?1:0;
+  f[6]=xorCheck(f,6); mcuSend(f,7);
 }
 
 static void handleCmd10(const uint8_t *frame, uint8_t total) {
@@ -527,7 +532,6 @@ static void pubEntity(const char *domain, const char *key, const char *json) {
 
 static void pubDiscovery() {
   String base = topicBase();
-  String avail = base + "/availability";
   String state = base + "/state";
   char p[700];
 
@@ -555,10 +559,10 @@ static void pubDiscovery() {
   for (auto &s : sensors) {
     snprintf(p, sizeof(p),
       "{\"name\":\"%s\",\"unique_id\":\"%s_%s\","
-      "\"state_topic\":\"%s\",\"availability_topic\":\"%s\","
+      "\"state_topic\":\"%s\","
       "\"value_template\":\"{{ value_json.%s }}\"",
       s.name, S7_DEVICE_ID, s.key,
-      state.c_str(), avail.c_str(), s.tpl);
+      state.c_str(), s.tpl);
     String ps(p);
     if (s.unit[0]) { ps += ",\"unit_of_measurement\":\""; ps += s.unit; ps += "\""; }
     if (s.dc[0])   { ps += ",\"device_class\":\""; ps += s.dc; ps += "\""; }
@@ -572,90 +576,85 @@ static void pubDiscovery() {
   // --- Binary sensors ---
   snprintf(p, sizeof(p),
     "{\"name\":\"MCU \xe5\x9c\xa8\xe7\xba\xbf\",\"unique_id\":\"%s_mcu_alive\","
-    "\"state_topic\":\"%s\",\"availability_topic\":\"%s\","
+    "\"state_topic\":\"%s\","
     "\"value_template\":\"{{ 'ON' if value_json.mcu_alive else 'OFF' }}\","
     "\"device_class\":\"connectivity\",\"icon\":\"mdi:chip\""
     "%s}",
-    S7_DEVICE_ID, state.c_str(), avail.c_str(), dev);
+    S7_DEVICE_ID, state.c_str(), dev);
   pubEntity("binary_sensor", "mcu_alive", p);
 
   snprintf(p, sizeof(p),
     "{\"name\":\"CS1258\",\"unique_id\":\"%s_cs_ok\","
-    "\"state_topic\":\"%s\",\"availability_topic\":\"%s\","
+    "\"state_topic\":\"%s\","
     "\"value_template\":\"{{ 'ON' if value_json.cs_ok else 'OFF' }}\","
     "\"device_class\":\"connectivity\",\"icon\":\"mdi:integrated-circuit-chip\""
     "%s}",
-    S7_DEVICE_ID, state.c_str(), avail.c_str(), dev);
+    S7_DEVICE_ID, state.c_str(), dev);
   pubEntity("binary_sensor", "cs_ok", p);
 
   // --- Switch: heater ---
   snprintf(p, sizeof(p),
     "{\"name\":\"\xe5\x8a\xa0\xe7\x83\xad\xe5\x99\xa8\",\"unique_id\":\"%s_heater\","
-    "\"state_topic\":\"%s\",\"availability_topic\":\"%s\","
+    "\"state_topic\":\"%s\","
     "\"command_topic\":\"%s/cmd/heater\","
     "\"value_template\":\"{{ 'ON' if value_json.heater else 'OFF' }}\","
     "\"payload_on\":\"ON\",\"payload_off\":\"OFF\","
     "\"icon\":\"mdi:radiator\""
     "%s}",
-    S7_DEVICE_ID, state.c_str(), avail.c_str(), base.c_str(), dev);
+    S7_DEVICE_ID, state.c_str(), base.c_str(), dev);
   pubEntity("switch", "heater", p);
 
   // --- Button: scan impedance ---
   snprintf(p, sizeof(p),
     "{\"name\":\"\xe6\xb5\x8b\xe9\x87\x8f\xe9\x98\xbb\xe6\x8a\x97\",\"unique_id\":\"%s_scan_impedance\","
     "\"command_topic\":\"%s/cmd/impedance\","
-    "\"availability_topic\":\"%s\","
     "\"payload_press\":\"1\","
     "\"icon\":\"mdi:flash-triangle-outline\""
     "%s}",
-    S7_DEVICE_ID, base.c_str(), avail.c_str(), dev);
+    S7_DEVICE_ID, base.c_str(), dev);
   pubEntity("button", "scan_impedance", p);
 
   // --- Number: age (box mode, not slider) ---
   snprintf(p, sizeof(p),
     "{\"name\":\"\xe5\xb9\xb4\xe9\xbe\x84\",\"unique_id\":\"%s_age\","
-    "\"state_topic\":\"%s\",\"availability_topic\":\"%s\","
+    "\"state_topic\":\"%s\","
     "\"command_topic\":\"%s/cmd/age\","
     "\"value_template\":\"{{ value_json.age }}\","
     "\"min\":10,\"max\":99,\"step\":1,\"mode\":\"box\","
     "\"icon\":\"mdi:calendar-account\""
     "%s}",
-    S7_DEVICE_ID, state.c_str(), avail.c_str(), base.c_str(), dev);
+    S7_DEVICE_ID, state.c_str(), base.c_str(), dev);
   pubEntity("number", "age", p);
 
   // --- Number: height (box mode, cm) ---
   snprintf(p, sizeof(p),
     "{\"name\":\"\xe8\xba\xab\xe9\xab\x98\",\"unique_id\":\"%s_height\","
-    "\"state_topic\":\"%s\",\"availability_topic\":\"%s\","
+    "\"state_topic\":\"%s\","
     "\"command_topic\":\"%s/cmd/height\","
     "\"value_template\":\"{{ (value_json.height_m * 100) | round(0) }}\","
     "\"min\":100,\"max\":250,\"step\":1,\"mode\":\"box\","
     "\"unit_of_measurement\":\"cm\","
     "\"icon\":\"mdi:human-male-height\""
     "%s}",
-    S7_DEVICE_ID, state.c_str(), avail.c_str(), base.c_str(), dev);
+    S7_DEVICE_ID, state.c_str(), base.c_str(), dev);
   pubEntity("number", "height", p);
 
   // --- Select: sex (Chinese options) ---
   snprintf(p, sizeof(p),
     "{\"name\":\"\xe6\x80\xa7\xe5\x88\xab\",\"unique_id\":\"%s_sex\","
-    "\"state_topic\":\"%s\",\"availability_topic\":\"%s\","
+    "\"state_topic\":\"%s\","
     "\"command_topic\":\"%s/cmd/sex\","
     "\"value_template\":\"{{ value_json.sex }}\","
     "\"options\":[\"\xe7\x94\xb7\",\"\xe5\xa5\xb3\"],"
     "\"icon\":\"mdi:gender-male-female\""
     "%s}",
-    S7_DEVICE_ID, state.c_str(), avail.c_str(), base.c_str(), dev);
+    S7_DEVICE_ID, state.c_str(), base.c_str(), dev);
   pubEntity("select", "sex", p);
 }
 
 static void pubState() {
   if (mqtt.connected())
     mqtt.publish((topicBase()+"/state").c_str(), stateJson().c_str(), true);
-}
-static void pubAvail(bool on) {
-  if (mqtt.connected())
-    mqtt.publish((topicBase()+"/availability").c_str(), on?"online":"offline", true);
 }
 
 static void mqttCb(char *topic, byte *payload, unsigned int length) {
@@ -665,7 +664,7 @@ static void mqttCb(char *topic, byte *payload, unsigned int length) {
   String b = topicBase();
 
   if (t == b + "/cmd/impedance") {
-    csDoImpedanceScan(); calcBodyComp(); pubState();
+    csDoImpedanceScan(); while(Serial.available())Serial.read(); rx.synced=false; calcBodyComp(); pubState();
   }
   else if (t == b + "/cmd/heater") {
     heaterSet(msg == "ON" || msg == "1"); pubState();
@@ -695,18 +694,18 @@ static void connectMqtt() {
   lastMqttMs = millis();
   mqtt.setServer(cfg.mqttHost, cfg.mqttPort ? cfg.mqttPort : 1883);
   mqtt.setCallback(mqttCb);
-  mqtt.setBufferSize(700);
+  mqtt.setBufferSize(1024);
   String cid = String(S7_DEVICE_ID) + "-" + String(ESP.getChipId(), HEX);
   bool ok = cfg.mqttUser[0]
-    ? mqtt.connect(cid.c_str(), cfg.mqttUser, cfg.mqttPass,
-                   (topicBase()+"/availability").c_str(), 0, true, "offline")
-    : mqtt.connect(cid.c_str(),
-                   (topicBase()+"/availability").c_str(), 0, true, "offline");
+    ? mqtt.connect(cid.c_str(), cfg.mqttUser, cfg.mqttPass)
+    : mqtt.connect(cid.c_str());
   if (ok) {
-    pubAvail(true);
     mqtt.subscribe((topicBase()+"/cmd/#").c_str());
     pubDiscovery();
-    pubState();
+    // Only publish state if we have real weight data;
+    // otherwise keep HA's retained reading from previous session
+    if (personOnScale || stableWeight >= WEIGHT_ON_THRESH)
+      pubState();
   }
 }
 
@@ -1003,7 +1002,7 @@ static void setupWeb() {
   web.on("/",HTTP_GET,handleRoot);
   web.on("/api/state",HTTP_GET,[]{web.send(200,"application/json",stateJson());});
   web.on("/save",HTTP_POST,[]{uint32_t ob=cfg.mcuBaud;applySave();if(cfg.mcuBaud!=ob){Serial.end();Serial.begin(cfg.mcuBaud);}mqtt.disconnect();sendSaveOk();wifiReconnectPending=true;wifiReconnectAt=millis()+500;});
-  web.on("/impedance",HTTP_POST,[]{csDoImpedanceScan();calcBodyComp();pubState();redir();});
+  web.on("/impedance",HTTP_POST,[]{csDoImpedanceScan();while(Serial.available())Serial.read();rx.synced=false;calcBodyComp();pubState();redir();});
   web.on("/heater",HTTP_POST,[]{heaterSet(web.arg("on")=="1");pubState();redir();});
   web.begin();
 }
@@ -1055,15 +1054,21 @@ void loop() {
       personOnScale    = true;
       measurementDone  = false;
       m.bodyValid      = false;
+      // Don't clear body comp values here -- keep previous reading
+      // visible in HA until the new scan completes.
       stableWeight     = m.weightKg;
       weightStableSince= millis();
     } else {
-      // Still on scale — track stability
-      float diff = m.weightKg - stableWeight;
-      if (diff < 0) diff = -diff;
-      if (diff > WEIGHT_STABLE_DELTA) {
-        stableWeight     = m.weightKg;
-        weightStableSince= millis();
+      // Still on scale -- track stability
+      // Once measurement is done, freeze stableWeight so stepping-off
+      // transitions don't overwrite the good reading.
+      if (!measurementDone) {
+        float diff = m.weightKg - stableWeight;
+        if (diff < 0) diff = -diff;
+        if (diff > WEIGHT_STABLE_DELTA) {
+          stableWeight     = m.weightKg;
+          weightStableSince= millis();
+        }
       }
     }
 
@@ -1072,19 +1077,28 @@ void loop() {
     // Auto impedance scan when weight is stable
     if (stable && !measurementDone && millis() - m.lastImpedMs > IMPEDANCE_COOL_MS) {
       csDoImpedanceScan();
+      // Flush stale UART bytes accumulated during blocking scan
+      while (Serial.available()) Serial.read();
+      rx.synced = false;
       calcBodyComp();
-      if (m.bodyValid) measurementDone = true;
-      pubState();
+      if (m.bodyValid) {
+        measurementDone = true;
+        pubState();
+      }
     }
 
-    // Periodic MQTT publish while standing on scale (only when stable)
+    // Periodic MQTT publish while standing on scale (only after measurement done)
     static uint32_t lp = 0;
-    if (stable && m.mcuAlive && millis() - lp > 3000) { lp = millis(); pubState(); }
+    if (stable && measurementDone && m.mcuAlive && millis() - lp > 3000) { lp = millis(); pubState(); }
 
   } else {
     if (personOnScale) {
-      // Just stepped off — do NOT publish (keep last retained state)
+      // Just stepped off
       personOnScale = false;
+      // Only publish final retained reading if body comp was completed.
+      // Otherwise keep HA's existing retained data from last good session.
+      if (measurementDone)
+        pubState();
     }
     // Off-scale: no MQTT publish, HA retains last measurement
   }
