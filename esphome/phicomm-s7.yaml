@@ -15,16 +15,13 @@ logger:
   baud_rate: 0  # UART0 used by MCU, disable logger serial
 
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
   ap:
     ssid: "S7-Fallback"
 
 captive_portal:
 
 api:
-  encryption:
-    key: !secret api_key
+  # No encryption for first-time setup. Add encryption key later if needed.
 
 ota:
   platform: esphome
